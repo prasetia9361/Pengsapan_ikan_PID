@@ -8,37 +8,31 @@
 #include "button.h"
 // === Pin Konfigurasi ===
 // Pin untuk Sensor Suhu MAX6675
-const int thermoDO = 12; // SO
-const int thermoCS = 15;
+const int thermoDO = 12; // SO (MISO)
+const int thermoCS = 15; // CS
 const int thermoCLK = 14; // SCK
 
 // Pin untuk Driver Motor Stepper A4988
-const int stepPin = 19;//19
-const int dirPin = 18;//18
-// Pin enable tidak selalu dibutuhkan oleh AccelStepper, namun kita tetap bisa menggunakannya
-// const int enablePin = 5;
+const int stepPin = 19;
+const int dirPin = 18;
+
 #define BOOT_BUTTON GPIO_NUM_0
+
 long serialTime;
 double Input;
-double celcius;
+
 // === Inisialisasi Komponen ===
 MAX6675 thermocouple(thermoCLK, thermoCS, thermoDO);
 
-// <<< PERUBAHAN DIMULAI DI SINI: Inisialisasi dengan AccelStepper >>>
-// Tipe driver (1), pin STEP, pin DIR
+// Inisialisasi dengan AccelStepper
 AccelStepper stepper(AccelStepper::DRIVER, stepPin, dirPin);
-// <<< PERUBAHAN SELESAI >>>
 
 // === Konfigurasi PID & Autotune ===
 double Setpoint, Output; // Variabel untuk PID
-
 double Kp = 2, Ki = 0.05, Kd = 0.5; // Nilai awal, akan di-update oleh autotune
 
-// Rentang output disesuaikan dengan langkah motor yang dibutuhkan
-// Misal, dari valve tertutup penuh (0) hingga terbuka penuh (400 langkah)
-// Sesuaikan nilai '400' ini dengan mekanisme Anda
 double outputMin = 0;
-double outputMax = 250; // Pastikan ini sesuai dengan kalibrasi fisik Anda
+double outputMax = 250; 
 
 // Inisialisasi PID Controller
 PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
@@ -49,7 +43,7 @@ PID_ATune aTune(&Input, &Output);
 button *tuningButton;
 
 // Variabel untuk proses tuning
-bool tuning = false; // Status apakah sedang tuning atau tidak
+bool tuning = false;
 
 void startTuning() {
   tuning = true;
@@ -58,92 +52,121 @@ void startTuning() {
   Serial.println("Sistem akan berosilasi di sekitar setpoint.");
 }
 
+void applicationTask0(void *param);
+void applicationTask1(void *param);
+
 void setup() {
   Serial.begin(115200);
   Serial.println("Sistem Pengasap Ikan Otomatis");
-  Serial.println("teBOOT button ESP32 untuk memulai proses Autotune PID.");
+  Serial.println("Kirim 't' atau 'T' melalui Serial Monitor untuk memulai Autotune PID.");
   tuningButton = new button(BOOT_BUTTON); 
-  tuningButton->begin();
-
-  // <<< PERUBAHAN DIMULAI DI SINI: Konfigurasi Motor Stepper >>>
-  // pinMode(enablePin, OUTPUT);
-  // digitalWrite(enablePin, LOW); // Aktifkan driver A4988
-
+  // Konfigurasi Motor Stepper
   stepper.setMaxSpeed(200);      // Kecepatan maksimum (langkah/detik)
-  stepper.setAcceleration(100);  // Akselerasi (langkah/detik^2)
-  stepper.setCurrentPosition(0); // PENTING: Asumsikan motor mulai dari posisi 0 (valve tertutup)
-  // <<< PERUBAHAN SELESAI >>>
+  stepper.setAcceleration(7000);  // Akselerasi (langkah/detik^2)
+  stepper.setCurrentPosition(0); // Asumsikan motor mulai dari posisi 0 (valve tertutup)
 
   // Tentukan Setpoint suhu (target di antara 50-55 C)
   Setpoint = 52.5;
 
   // Konfigurasi Autotune
-  aTune.SetOutputStep(100);    // Seberapa besar perubahan output saat tuning, sesuaikan
-  aTune.SetControlType(1);     // Tipe PID
-  aTune.SetNoiseBand(0.5);     // Batas noise suhu (misal 0.5 C)
-  aTune.SetLookbackSec(60);    // Waktu histori (detik) untuk analisis
+  aTune.SetOutputStep(100);
+  aTune.SetControlType(1);
+  aTune.SetNoiseBand(0.5);
+  aTune.SetLookbackSec(60);
 
   // Aktifkan PID
   myPID.SetOutputLimits(outputMin, outputMax);
   myPID.SetMode(AUTOMATIC);
 
-  serialTime = millis();
+  TaskHandle_t task0;
+  xTaskCreatePinnedToCore(
+    applicationTask0,
+    "applicationTask0",
+    10000,
+    NULL,
+    1,
+    &task0,
+    0
+  );
+
+  TaskHandle_t task1;
+  xTaskCreatePinnedToCore(
+    applicationTask1,
+    "applicationTask1",
+    10000,
+    NULL,
+    1,
+    &task1,
+    1
+  );
+
 }
-bool lastbutton = false;
+
 void loop() {
-  // tuningButton->tick();
-  // if (tuningButton->getPress() == true) 
-  // {
-  //   startTuning(); 
-  //   tuningButton->setPress(false);
-  // }
-  if (Serial.available() > 0) {
-    char val = Serial.read();
-    if (val == 't' || val == 'T') {
-      startTuning();
+  tuningButton->tick();
+  vTaskDelay(pdMS_TO_TICKS(50));
+}
+
+void applicationTask0(void *param){
+  serialTime = millis();
+  for (;;)
+  {
+    Input = thermocouple.readCelsius();
+
+    if (isnan(Input)) {
+      Serial.println("Gagal membaca suhu dari termokopel!");
+      // Kita bisa menambahkan jeda singkat di sini untuk memberi sensor waktu
+      // sebelum loop berikutnya mencoba membaca lagi.
+      delay(500); 
+      return; // Keluar dari iterasi loop ini jika bacaan gagal
     }
-  }
-
-  // Baca suhu dari sensor
-  celcius = thermocouple.readCelsius();
-
-  if (isnan(thermocouple.readCelsius())) {
-    Serial.println("Gagal membaca suhu dari termokopel!");
-    return; // Keluar dari loop jika bacaan gagal
-  }
-
-  if (tuning) {
-    byte val = aTune.Runtime();
-    if (val != 0) {
-      tuning = false;
-      Kp = aTune.GetKp();
-      Ki = aTune.GetKi();
-      Kd = aTune.GetKd();
-      myPID.SetTunings(Kp, Ki, Kd);
-      
-      Serial.println("\nProses Autotune Selesai!");
-      Serial.println("Nilai PID baru telah diterapkan:");
-      Serial.print("Kp: "); Serial.println(Kp);
-      Serial.print("Ki: "); Serial.println(Ki);
-      Serial.print("Kd: "); Serial.println(Kd);
-    }
-  } else {
-    myPID.Compute(); // Jalankan mode PID normal
-  }
   
-  // <<< PERUBAHAN DIMULAI DI SINI: Kontrol Motor dengan AccelStepper >>>
-  // Output PID menjadi target posisi motor
-  stepper.moveTo(Output); 
-  // Fungsi ini harus dipanggil sesering mungkin agar motor bergerak dengan mulus
-  stepper.run(); 
-  // <<< PERUBAHAN SELESAI >>>
+    // Cetak informasi ke Serial Monitor setiap 2 detik
+    if (millis() - serialTime > 2000) {
+      serialTime = millis();
+      Serial.print("Setpoint: "); Serial.print(Setpoint);
+      Serial.print(" C | Suhu: "); Serial.print(Input);
+      Serial.print(" C | PID Output (Target Pos): "); Serial.print(Output);
+      Serial.print(" | Posisi Motor Aktual: "); Serial.println(stepper.currentPosition());
+      delay(500);
+    }
+    delay(50);
+  }
+}
 
-  // Cetak informasi ke Serial Monitor setiap 2 detik
-  if (millis() - serialTime > 2000) {
-    serialTime = millis();
-    Serial.print("Setpoint: "); Serial.print(Setpoint);
-    Serial.print(" | Suhu: "); Serial.print(celcius);
-    Serial.print(" | PID Output (Target Pos): "); Serial.print(Output);
-    Serial.print(" | Posisi Motor Aktual: "); Serial.println(stepper.currentPosition());
+void applicationTask1(void *param){
+  tuningButton->begin();
+  for (;;)
+  {
+    if (tuningButton->getPress() == true) 
+    {
+      startTuning(); 
+      tuningButton->setPress(false);
+    }
+  
+    if (tuning) {
+      byte val = aTune.Runtime();
+      Serial.println(val);
+      if (val != 0) {
+        tuning = false;
+        Kp = aTune.GetKp();
+        Ki = aTune.GetKi();
+        Kd = aTune.GetKd();
+        myPID.SetTunings(Kp, Ki, Kd);
+        
+        Serial.println("\nProses Autotune Selesai!");
+        Serial.println("Nilai PID baru telah diterapkan:");
+        Serial.print("Kp: "); Serial.println(Kp);
+        Serial.print("Ki: "); Serial.println(Ki);
+        Serial.print("Kd: "); Serial.println(Kd);
+      }
+    } else {
+      myPID.Compute(); // Jalankan mode PID normal
+    }
+    
+    // Kontrol Motor dengan AccelStepper
+    stepper.moveTo(Output); 
+    stepper.run(); 
+    delay(50);
   }
 }
