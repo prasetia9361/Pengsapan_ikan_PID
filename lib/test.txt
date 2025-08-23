@@ -1,0 +1,60 @@
+#include <Arduino.h>
+
+#include <AccelStepper.h>
+
+// Definisikan pin-pin yang terhubung ke motor stepper
+#define STEP_PIN 19
+#define DIR_PIN 18
+// #define ENABLE_PIN 14 // Opsional, bisa dihubungkan ke GND jika selalu aktif
+/*
+*driver a4988
+blk B1
+grn A1
+blu A2
+RED B2
+Reset -> sleep 
+vdd -> 5v
+vmot -> 12v
+gnd -> gnd
+* logic shifter
+Dir -> HV1
+STEP -> HV2
+HV -> 5 volt
+LV -> 3.3 volt 
+LV1 -> DIR_PIN
+LV2 -> STEP_PIN
+gnd -> gnd
+
+*/
+// Inisialisasi objek AccelStepper
+AccelStepper stepper(1, STEP_PIN, DIR_PIN); // 1 = single pin mode
+
+void setup() {
+  // Atur kecepatan maksimum dan akselerasi
+  stepper.setMaxSpeed(2000);
+  stepper.setAcceleration(1000);
+
+  // Jika ENABLE_PIN digunakan, aktifkan driver
+  // pinMode(ENABLE_PIN, OUTPUT);
+  // digitalWrite(ENABLE_PIN, LOW); // Aktifkan driver
+}
+
+void loop() {
+  // Geser motor 1000 langkah ke depan
+  stepper.move(200);
+  
+  // Tunggu sampai motor mencapai posisi yang dituju
+  while (stepper.distanceToGo() != 0) {
+    stepper.run();
+  }
+  delay(1000);
+
+  // Geser motor 1000 langkah ke belakang
+  stepper.move(-200);
+
+  // Tunggu sampai motor mencapai posisi yang dituju
+  while (stepper.distanceToGo() != 0) {
+    stepper.run();
+  }
+  delay(1000);
+}
