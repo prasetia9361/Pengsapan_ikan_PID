@@ -6,77 +6,158 @@
 #include <AccelStepper.h>
 
 #include "button.h"
-// === Pin Konfigurasi ===
-// Pin untuk Sensor Suhu MAX6675
+
 const int thermoDO = 12; // SO (MISO)
 const int thermoCS = 15; // CS
 const int thermoCLK = 14; // SCK
 
-// Pin untuk Driver Motor Stepper A4988
 const int stepPin = 19;
 const int dirPin = 18;
 
 #define BOOT_BUTTON GPIO_NUM_0
 
-long serialTime;
-double Input;
 
-// === Inisialisasi Komponen ===
-MAX6675 thermocouple(thermoCLK, thermoCS, thermoDO);
+byte ATuneModeRemember=2; // Menyimpan mode PID sebelum autotune (0: MANUAL, 1: AUTOMATIC, 2: default)
+double input, output, setpoint=52.50; // input: nilai proses (misal suhu), output: nilai keluaran ke aktuator, setpoint: target yang diinginkan
 
-// Inisialisasi dengan AccelStepper
-AccelStepper stepper(AccelStepper::DRIVER, stepPin, dirPin);
+double kp=3.06,ki=0.03,kd=0.27; // kp: konstanta proporsional, ki: konstanta integral, kd: konstanta derivatif
 
-// === Konfigurasi PID & Autotune ===
-double Setpoint, Output; // Variabel untuk PID
-double Kp = 2, Ki = 0.05, Kd = 0.5; // Nilai awal, akan di-update oleh autotune
+double kpmodel=1.5, taup=100, theta[50]; // kpmodel: konstanta proporsional model, taup: waktu tunda model, theta: array untuk simulasi model proses
+double outputStart=0; // output awal untuk simulasi atau autotune
+double aTuneStep=50, aTuneNoise=1, aTuneStartValue=100; // aTuneStep: besaran langkah output autotune, aTuneNoise: toleransi noise autotune, aTuneStartValue: nilai awal output autotune
+unsigned int aTuneLookBack=20; // durasi lookback autotune dalam detik
+
+boolean tuning = false;
+unsigned long  modelTime, serialTime;
 
 double outputMin = 0;
 double outputMax = 250; 
 
-// Inisialisasi PID Controller
-PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
+MAX6675 thermocouple(thermoCLK, thermoCS, thermoDO);
 
-// Inisialisasi PID Autotune
-PID_ATune aTune(&Input, &Output);
+AccelStepper stepper(AccelStepper::DRIVER, stepPin, dirPin);
+
+PID myPID(&input, &output, &setpoint,kp,ki,kd, DIRECT);
+PID_ATune aTune(&input, &output);
 
 button *tuningButton;
 
-// Variabel untuk proses tuning
-bool tuning = false;
+//set to false to connect to the real world
+boolean useSimulation = false;
 
-void startTuning() {
-  tuning = true;
-  Serial.println("\nMemulai Proses Autotune PID...");
-  Serial.println("Proses ini akan memakan waktu beberapa menit.");
-  Serial.println("Sistem akan berosilasi di sekitar setpoint.");
+void AutoTuneHelper(boolean start)
+{
+  if(start)
+    ATuneModeRemember = myPID.GetMode();
+  else
+    myPID.SetMode(ATuneModeRemember);
+}
+
+void changeAutoTune()
+{
+ if(!tuning)
+  {
+    //Set the output to the desired starting frequency.
+    output=aTuneStartValue;
+    aTune.SetNoiseBand(aTuneNoise);
+    aTune.SetOutputStep(aTuneStep);
+    aTune.SetLookbackSec((int)aTuneLookBack);
+    AutoTuneHelper(true);
+    tuning = true;
+  }
+  else
+  { //cancel autotune
+    aTune.Cancel();
+    tuning = false;
+    AutoTuneHelper(false);
+  }
+}
+
+
+void SerialSend()
+{
+  Serial.print("setpoint: ");Serial.print(setpoint); Serial.print(" ");
+  Serial.print("suhu: ");Serial.print(input); Serial.print(" ");
+  Serial.print("output: ");Serial.print(output); Serial.print(" ");
+  Serial.print("current output: ");Serial.print(stepper.currentPosition());Serial.print(" ");
+  if(tuning){
+    Serial.println("tuning mode");
+  } else {
+    Serial.print("kp: ");Serial.print(myPID.GetKp());Serial.print(" ");
+    Serial.print("ki: ");Serial.print(myPID.GetKi());Serial.print(" ");
+    Serial.print("kd: ");Serial.print(myPID.GetKd());Serial.println();
+  }
+  delay(500);
+}
+
+void SerialReceive()
+{
+  if(Serial.available())
+  {
+   char b = Serial.read(); 
+   Serial.flush(); 
+   if((b=='1' && !tuning) || (b!='1' && tuning))changeAutoTune();
+  }
+  // if (tuningButton->getPress() == true) 
+  // {
+  //   changeAutoTune(); 
+  //   tuningButton->setPress(false);
+  // }
+}
+
+void DoModel()
+{
+  //cycle the dead time
+  for(byte i=0;i<49;i++)
+  {
+    theta[i] = theta[i+1];
+  }
+  //compute the input
+  input = (kpmodel / taup) *(theta[0]-outputStart) + input*(1-1/taup) + ((float)random(-10,10))/100;
+
 }
 
 void applicationTask0(void *param);
 void applicationTask1(void *param);
 
-void setup() {
-  Serial.begin(115200);
-  Serial.println("Sistem Pengasap Ikan Otomatis");
-  Serial.println("Kirim 't' atau 'T' melalui Serial Monitor untuk memulai Autotune PID.");
-  tuningButton = new button(BOOT_BUTTON); 
+void setup()
+{
+  if(useSimulation)
+  {
+    for(byte i=0;i<50;i++)
+    {
+      theta[i]=outputStart;
+    }
+    modelTime = 0;
+  }
+
+  tuningButton = new button(BOOT_BUTTON);
   // Konfigurasi Motor Stepper
   stepper.setMaxSpeed(200);      // Kecepatan maksimum (langkah/detik)
-  stepper.setAcceleration(7000);  // Akselerasi (langkah/detik^2)
-  stepper.setCurrentPosition(0); // Asumsikan motor mulai dari posisi 0 (valve tertutup)
+  stepper.setAcceleration(100);  // Akselerasi (langkah/detik^2)
+  
+  stepper.setCurrentPosition(outputStart);
 
-  // Tentukan Setpoint suhu (target di antara 50-55 C)
-  Setpoint = 52.5;
-
-  // Konfigurasi Autotune
-  aTune.SetOutputStep(100);
-  aTune.SetControlType(1);
-  aTune.SetNoiseBand(0.5);
-  aTune.SetLookbackSec(60);
-
-  // Aktifkan PID
-  myPID.SetOutputLimits(outputMin, outputMax);
+  // for (size_t i = 100; i >= 0 ; i--)
+  // {
+  //   Serial.println(i);
+  //   stepper.move(i);
+  //   delay(100);
+  // }
+  //Setup the pid 
+  // myPID.SetOutputLimits(outputMin, outputMax);
   myPID.SetMode(AUTOMATIC);
+
+  if(tuning)
+  {
+    tuning=false;
+    changeAutoTune();
+    tuning=true;
+  }
+  
+  serialTime = 0;
+  tuningButton->begin();
+  Serial.begin(115200);
 
   TaskHandle_t task0;
   xTaskCreatePinnedToCore(
@@ -102,71 +183,73 @@ void setup() {
 
 }
 
-void loop() {
-  tuningButton->tick();
+void loop()
+{
   vTaskDelay(pdMS_TO_TICKS(50));
 }
 
 void applicationTask0(void *param){
-  serialTime = millis();
   for (;;)
   {
-    Input = thermocouple.readCelsius();
-
-    if (isnan(Input)) {
-      Serial.println("Gagal membaca suhu dari termokopel!");
-      // Kita bisa menambahkan jeda singkat di sini untuk memberi sensor waktu
-      // sebelum loop berikutnya mencoba membaca lagi.
-      delay(500); 
-      return; // Keluar dari iterasi loop ini jika bacaan gagal
+    if(!useSimulation)
+    { //pull the input in from the real world
+      input = thermocouple.readCelsius();
+      if (isnan(input)) {
+        Serial.println("Gagal membaca suhu dari termokopel!");
+        // Kita bisa menambahkan jeda singkat di sini untuk memberi sensor waktu
+        // sebelum loop berikutnya mencoba membaca lagi.
+        delay(500); 
+        return; // Keluar dari iterasi loop ini jika bacaan gagal
+      }
     }
   
-    // Cetak informasi ke Serial Monitor setiap 2 detik
-    if (millis() - serialTime > 2000) {
-      serialTime = millis();
-      Serial.print("Setpoint: "); Serial.print(Setpoint);
-      Serial.print(" C | Suhu: "); Serial.print(Input);
-      Serial.print(" C | PID Output (Target Pos): "); Serial.print(Output);
-      Serial.print(" | Posisi Motor Aktual: "); Serial.println(stepper.currentPosition());
-      delay(500);
+    //send-receive with processing if it's time
+    if(millis()>serialTime)
+    {
+      SerialReceive();
+      SerialSend();
+      serialTime+=500;
     }
-    delay(50);
   }
 }
 
 void applicationTask1(void *param){
-  tuningButton->begin();
   for (;;)
   {
-    if (tuningButton->getPress() == true) 
-    {
-      startTuning(); 
-      tuningButton->setPress(false);
-    }
+
+    unsigned long now = millis();
   
-    if (tuning) {
-      byte val = aTune.Runtime();
-      Serial.println(val);
-      if (val != 0) {
+    if(tuning)
+    {
+      byte val = (aTune.Runtime());
+      if (val!=0)
+      {
         tuning = false;
-        Kp = aTune.GetKp();
-        Ki = aTune.GetKi();
-        Kd = aTune.GetKd();
-        myPID.SetTunings(Kp, Ki, Kd);
-        
-        Serial.println("\nProses Autotune Selesai!");
-        Serial.println("Nilai PID baru telah diterapkan:");
-        Serial.print("Kp: "); Serial.println(Kp);
-        Serial.print("Ki: "); Serial.println(Ki);
-        Serial.print("Kd: "); Serial.println(Kd);
       }
-    } else {
-      myPID.Compute(); // Jalankan mode PID normal
+      if(!tuning)
+      { //we're done, set the tuning parameters
+        kp = aTune.GetKp();
+        ki = aTune.GetKi();
+        kd = aTune.GetKd();
+        myPID.SetTunings(kp,ki,kd);
+        AutoTuneHelper(false);
+      }
     }
+    else myPID.Compute();
     
-    // Kontrol Motor dengan AccelStepper
-    stepper.moveTo(Output); 
-    stepper.run(); 
-    delay(50);
+    if(useSimulation)
+    {
+      theta[30]=output;
+      if(now>=modelTime)
+      {
+        modelTime +=100; 
+        DoModel();
+      }
+    }
+    else
+    {
+      stepper.moveTo(output); 
+      stepper.run(); 
+    }
   }
 }
