@@ -6,6 +6,7 @@
 #include <AccelStepper.h>
 
 #include "button.h"
+#include "storage.h"
 
 const int thermoDO = 12; // SO (MISO)
 const int thermoCS = 15; // CS
@@ -16,11 +17,11 @@ const int dirPin = 18;
 
 #define BOOT_BUTTON GPIO_NUM_0
 
-
 byte ATuneModeRemember=2; // Menyimpan mode PID sebelum autotune (0: MANUAL, 1: AUTOMATIC, 2: default)
 double input, output, setpoint=52.50; // input: nilai proses (misal suhu), output: nilai keluaran ke aktuator, setpoint: target yang diinginkan
 
-double kp=3.06,ki=0.03,kd=0.27; // kp: konstanta proporsional, ki: konstanta integral, kd: konstanta derivatif
+double kp,ki,kd; // kp: konstanta proporsional, ki: konstanta integral, kd: konstanta derivatif
+// double kp=3.06,ki=0.03,kd=0.27;
 
 double kpmodel=1.5, taup=100, theta[50]; // kpmodel: konstanta proporsional model, taup: waktu tunda model, theta: array untuk simulasi model proses
 double outputStart=0; // output awal untuk simulasi atau autotune
@@ -33,6 +34,7 @@ unsigned long  modelTime, serialTime;
 double outputMin = 0;
 double outputMax = 250; 
 
+storage *memory;
 MAX6675 thermocouple(thermoCLK, thermoCS, thermoDO);
 
 AccelStepper stepper(AccelStepper::DRIVER, stepPin, dirPin);
@@ -41,6 +43,7 @@ PID myPID(&input, &output, &setpoint,kp,ki,kd, DIRECT);
 PID_ATune aTune(&input, &output);
 
 button *tuningButton;
+
 
 //set to false to connect to the real world
 boolean useSimulation = false;
@@ -72,8 +75,6 @@ void changeAutoTune()
     AutoTuneHelper(false);
   }
 }
-
-
 void SerialSend()
 {
   Serial.print("setpoint: ");Serial.print(setpoint); Serial.print(" ");
@@ -122,6 +123,13 @@ void applicationTask1(void *param);
 
 void setup()
 {
+  Serial.begin(115200);
+  memory = new storage();
+  memory->init();
+
+
+  // memory->savePID(kp, ki, kd);
+  
   if(useSimulation)
   {
     for(byte i=0;i<50;i++)
@@ -134,19 +142,22 @@ void setup()
   tuningButton = new button(BOOT_BUTTON);
   // Konfigurasi Motor Stepper
   stepper.setMaxSpeed(200);      // Kecepatan maksimum (langkah/detik)
-  stepper.setAcceleration(100);  // Akselerasi (langkah/detik^2)
-  
-  stepper.setCurrentPosition(outputStart);
-
-  // for (size_t i = 100; i >= 0 ; i--)
-  // {
-  //   Serial.println(i);
-  //   stepper.move(i);
-  //   delay(100);
-  // }
-  //Setup the pid 
+  stepper.setAcceleration(1000);  // Akselerasi (langkah/detik^2)
+  stepper.setCurrentPosition(0);
+  stepper.moveTo(200);
+  delay(5000);
+  stepper.setCurrentPosition(0);
   // myPID.SetOutputLimits(outputMin, outputMax);
   myPID.SetMode(AUTOMATIC);
+
+  // kp = 3.06;
+  // ki = 0.03;
+  // kd = 0.27;
+  kp = memory->getKp();
+  ki = memory->getKi();
+  kd = memory->getKd();
+  myPID.SetTunings(kp,ki,kd);
+  // memory->savePID(kp, ki, kd);
 
   if(tuning)
   {
@@ -157,7 +168,6 @@ void setup()
   
   serialTime = 0;
   tuningButton->begin();
-  Serial.begin(115200);
 
   TaskHandle_t task0;
   xTaskCreatePinnedToCore(
@@ -232,6 +242,7 @@ void applicationTask1(void *param){
         ki = aTune.GetKi();
         kd = aTune.GetKd();
         myPID.SetTunings(kp,ki,kd);
+        memory->savePID(kp, ki, kd);
         AutoTuneHelper(false);
       }
     }
