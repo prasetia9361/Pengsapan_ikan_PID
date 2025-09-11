@@ -41,20 +41,20 @@ void setup() {
 
 void loop() {
   // Geser motor 1000 langkah ke depan
-  stepper.move(200);
+  stepper.moveTo(-1600);
   
   // Tunggu sampai motor mencapai posisi yang dituju
-  while (stepper.distanceToGo() != 0) {
+  // while (stepper.distanceToGo() != 0) {
     stepper.run();
-  }
-  delay(1000);
+  // }
+  // delay(1000);
 
-  // Geser motor 1000 langkah ke belakang
-  stepper.move(-200);
+  // // Geser motor 1000 langkah ke belakang
+  // stepper.move(1600);
 
-  // Tunggu sampai motor mencapai posisi yang dituju
-  while (stepper.distanceToGo() != 0) {
-    stepper.run();
-  }
-  delay(1000);
+  // // Tunggu sampai motor mencapai posisi yang dituju
+  // while (stepper.distanceToGo() != 0) {
+  //   stepper.run();
+  // }
+  // delay(1000);
 }

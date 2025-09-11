@@ -25,14 +25,14 @@ double kp,ki,kd; // kp: konstanta proporsional, ki: konstanta integral, kd: kons
 
 double kpmodel=1.5, taup=100, theta[50]; // kpmodel: konstanta proporsional model, taup: waktu tunda model, theta: array untuk simulasi model proses
 double outputStart=0; // output awal untuk simulasi atau autotune
-double aTuneStep=50, aTuneNoise=1, aTuneStartValue=100; // aTuneStep: besaran langkah output autotune, aTuneNoise: toleransi noise autotune, aTuneStartValue: nilai awal output autotune
+double aTuneStep=50, aTuneNoise=1, aTuneStartValue=400; // aTuneStep: besaran langkah output autotune, aTuneNoise: toleransi noise autotune, aTuneStartValue: nilai awal output autotune
 unsigned int aTuneLookBack=20; // durasi lookback autotune dalam detik
 
 boolean tuning = false;
 unsigned long  modelTime, serialTime;
 
 double outputMin = 0;
-double outputMax = 250; 
+double outputMax = 1600; 
 
 storage *memory;
 MAX6675 thermocouple(thermoCLK, thermoCS, thermoDO);
@@ -79,7 +79,7 @@ void SerialSend()
 {
   Serial.print("setpoint: ");Serial.print(setpoint); Serial.print(" ");
   Serial.print("suhu: ");Serial.print(input); Serial.print(" ");
-  Serial.print("output: ");Serial.print(output); Serial.print(" ");
+  Serial.print("output: ");Serial.print(-output); Serial.print(" ");
   Serial.print("current output: ");Serial.print(stepper.currentPosition());Serial.print(" ");
   if(tuning){
     Serial.println("tuning mode");
@@ -141,18 +141,18 @@ void setup()
 
   tuningButton = new button(BOOT_BUTTON);
   // Konfigurasi Motor Stepper
-  stepper.setMaxSpeed(200);      // Kecepatan maksimum (langkah/detik)
-  stepper.setAcceleration(1000);  // Akselerasi (langkah/detik^2)
+  stepper.setMaxSpeed(700);
+  stepper.setAcceleration(300);
   stepper.setCurrentPosition(0);
-  stepper.moveTo(200);
-  delay(5000);
-  stepper.setCurrentPosition(0);
-  // myPID.SetOutputLimits(outputMin, outputMax);
+  // stepper.moveTo(200);
+  // delay(5000);
+  // stepper.setCurrentPosition(0);
+  myPID.SetOutputLimits(outputMin, outputMax);
   myPID.SetMode(AUTOMATIC);
 
-  // kp = 3.06;
-  // ki = 0.03;
-  // kd = 0.27;
+  // kp = 8.06;
+  // ki = 3.00;
+  // kd = 1.27;
   kp = memory->getKp();
   ki = memory->getKi();
   kd = memory->getKd();
@@ -201,9 +201,9 @@ void loop()
 void applicationTask0(void *param){
   for (;;)
   {
+    input = thermocouple.readCelsius();
     if(!useSimulation)
     { //pull the input in from the real world
-      input = thermocouple.readCelsius();
       if (isnan(input)) {
         Serial.println("Gagal membaca suhu dari termokopel!");
         // Kita bisa menambahkan jeda singkat di sini untuk memberi sensor waktu
@@ -259,7 +259,7 @@ void applicationTask1(void *param){
     }
     else
     {
-      stepper.moveTo(output); 
+      stepper.moveTo(-output); 
       stepper.run(); 
     }
   }
