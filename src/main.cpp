@@ -5,48 +5,106 @@
 #include <PID_AutoTune_v0.h>
 #include <AccelStepper.h>
 
+// MQTT: Include library WiFi dan PubSubClient
+#include <WiFi.h>
+#include <PubSubClient.h>
+
 #include "button.h"
 #include "storage.h"
 
+// --- Konfigurasi Perangkat Keras ---
 const int thermoDO = 12; // SO (MISO)
 const int thermoCS = 15; // CS
 const int thermoCLK = 14; // SCK
-
 const int stepPin = 19;
 const int dirPin = 18;
-
 #define BOOT_BUTTON GPIO_NUM_0
 
-byte ATuneModeRemember=2; // Menyimpan mode PID sebelum autotune (0: MANUAL, 1: AUTOMATIC, 2: default)
-double input, output, setpoint=52.50; // input: nilai proses (misal suhu), output: nilai keluaran ke aktuator, setpoint: target yang diinginkan
+// --- Konfigurasi WiFi ---
+// MQTT: Ganti dengan kredensial WiFi Anda
+const char* ssid = "wefee";
+const char* password = "wepaywefee";
 
-double kp,ki,kd; // kp: konstanta proporsional, ki: konstanta integral, kd: konstanta derivatif
-// double kp=3.06,ki=0.03,kd=0.27;
+// --- Konfigurasi MQTT ---
+// MQTT: Konfigurasi untuk broker EMQX publik
+const char* mqtt_server = "broker.emqx.io";
+const int mqtt_port = 1883;
+const char* mqtt_topic = "esp32/pid/suhu"; // Topik untuk publikasi data suhu
 
-double kpmodel=1.5, taup=100, theta[50]; // kpmodel: konstanta proporsional model, taup: waktu tunda model, theta: array untuk simulasi model proses
-double outputStart=0; // output awal untuk simulasi atau autotune
-double aTuneStep=50, aTuneNoise=1, aTuneStartValue=400; // aTuneStep: besaran langkah output autotune, aTuneNoise: toleransi noise autotune, aTuneStartValue: nilai awal output autotune
-unsigned int aTuneLookBack=20; // durasi lookback autotune dalam detik
+// MQTT: Inisialisasi client WiFi dan MQTT
+WiFiClient espClient;
+PubSubClient client(espClient);
+unsigned long lastMsg = 0; // MQTT: Variabel untuk timer pengiriman data
+unsigned long lastReconnectAttempt = 0; // Timer untuk reconnection
 
+// --- Variabel PID & Autotune ---
+byte ATuneModeRemember=2;
+double input, output, setpoint=52.50;
+double kp,ki,kd;
+double kpmodel=1.5, taup=100, theta[50];
+double outputStart=0;
+double aTuneStep=50, aTuneNoise=1, aTuneStartValue=400;
+unsigned int aTuneLookBack=20;
 boolean tuning = false;
-unsigned long  modelTime, serialTime;
-
+unsigned long modelTime, serialTime;
 double outputMin = 0;
 double outputMax = 1600; 
 
+// --- Objek & Instance ---
 storage *memory;
 MAX6675 thermocouple(thermoCLK, thermoCS, thermoDO);
-
 AccelStepper stepper(AccelStepper::DRIVER, stepPin, dirPin);
-
 PID myPID(&input, &output, &setpoint,kp,ki,kd, DIRECT);
 PID_ATune aTune(&input, &output);
-
 button *tuningButton;
 
-
-//set to false to connect to the real world
 boolean useSimulation = false;
+
+// MQTT: Fungsi untuk koneksi WiFi
+void setup_wifi() {
+  delay(10);
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+// Perbaikan fungsi reconnect untuk menghindari stack overflow
+bool reconnect() {
+  unsigned long now = millis();
+  // Coba reconnect maksimal setiap 5 detik
+  if (now - lastReconnectAttempt > 5000) {
+    lastReconnectAttempt = now;
+    
+    Serial.print("Attempting MQTT connection...");
+    // Buat client ID acak
+    String clientId = "ESP32Client-";
+    clientId += String(random(0xffff), HEX);
+    
+    // Coba untuk terhubung
+    if (client.connect(clientId.c_str())) {
+      Serial.println("connected");
+      return true;
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      return false;
+    }
+  }
+  return false;
+}
 
 void AutoTuneHelper(boolean start)
 {
@@ -60,7 +118,6 @@ void changeAutoTune()
 {
  if(!tuning)
   {
-    //Set the output to the desired starting frequency.
     output=aTuneStartValue;
     aTune.SetNoiseBand(aTuneNoise);
     aTune.SetOutputStep(aTuneStep);
@@ -69,12 +126,13 @@ void changeAutoTune()
     tuning = true;
   }
   else
-  { //cancel autotune
+  {
     aTune.Cancel();
     tuning = false;
     AutoTuneHelper(false);
   }
 }
+
 void SerialSend()
 {
   Serial.print("setpoint: ");Serial.print(setpoint); Serial.print(" ");
@@ -88,7 +146,6 @@ void SerialSend()
     Serial.print("ki: ");Serial.print(myPID.GetKi());Serial.print(" ");
     Serial.print("kd: ");Serial.print(myPID.GetKd());Serial.println();
   }
-  delay(500);
 }
 
 void SerialReceive()
@@ -99,36 +156,27 @@ void SerialReceive()
    Serial.flush(); 
    if((b=='1' && !tuning) || (b!='1' && tuning))changeAutoTune();
   }
-  // if (tuningButton->getPress() == true) 
-  // {
-  //   changeAutoTune(); 
-  //   tuningButton->setPress(false);
-  // }
 }
 
 void DoModel()
 {
-  //cycle the dead time
   for(byte i=0;i<49;i++)
   {
     theta[i] = theta[i+1];
   }
-  //compute the input
   input = (kpmodel / taup) *(theta[0]-outputStart) + input*(1-1/taup) + ((float)random(-10,10))/100;
-
 }
 
 void applicationTask0(void *param);
+void loopCore0(void *param);
 void applicationTask1(void *param);
 
 void setup()
 {
   Serial.begin(115200);
+  
   memory = new storage();
   memory->init();
-
-
-  // memory->savePID(kp, ki, kd);
   
   if(useSimulation)
   {
@@ -140,13 +188,10 @@ void setup()
   }
 
   tuningButton = new button(BOOT_BUTTON);
-  // Konfigurasi Motor Stepper
   stepper.setMaxSpeed(700);
   stepper.setAcceleration(300);
   stepper.setCurrentPosition(0);
-  // stepper.moveTo(200);
-  // delay(5000);
-  // stepper.setCurrentPosition(0);
+
   myPID.SetOutputLimits(outputMin, outputMax);
   myPID.SetMode(AUTOMATIC);
 
@@ -157,7 +202,6 @@ void setup()
   ki = memory->getKi();
   kd = memory->getKd();
   myPID.SetTunings(kp,ki,kd);
-  // memory->savePID(kp, ki, kd);
 
   if(tuning)
   {
@@ -173,9 +217,18 @@ void setup()
   xTaskCreatePinnedToCore(
     applicationTask0,
     "applicationTask0",
-    10000,
+    8192,  // Ditingkatkan dari 10000 ke 8192 (lebih aman)
     NULL,
     1,
+    &task0,
+    0
+  );
+  xTaskCreatePinnedToCore(
+    loopCore0,
+    "loopCore0",
+    4096,  // Ditingkatkan dari 1000 ke 4096 untuk MQTT operations
+    NULL,
+    2,
     &task0,
     0
   );
@@ -184,14 +237,13 @@ void setup()
   xTaskCreatePinnedToCore(
     applicationTask1,
     "applicationTask1",
-    10000,
+    8192,  // Ditingkatkan dari 10000 ke 8192
     NULL,
     1,
     &task1,
     1
   );
-
-}
+} // Menambahkan kurung kurawal yang hilang
 
 void loop()
 {
@@ -199,34 +251,64 @@ void loop()
 }
 
 void applicationTask0(void *param){
+  // MQTT: Setup WiFi dan koneksi ke MQTT Broker
+  setup_wifi();
+  client.setServer(mqtt_server, mqtt_port);
   for (;;)
   {
     input = thermocouple.readCelsius();
     if(!useSimulation)
-    { //pull the input in from the real world
+    {
       if (isnan(input)) {
         Serial.println("Gagal membaca suhu dari termokopel!");
-        // Kita bisa menambahkan jeda singkat di sini untuk memberi sensor waktu
-        // sebelum loop berikutnya mencoba membaca lagi.
         delay(500); 
-        return; // Keluar dari iterasi loop ini jika bacaan gagal
+        continue; // Lanjut ke iterasi berikutnya jika bacaan gagal
       }
     }
   
-    //send-receive with processing if it's time
-    if(millis()>serialTime)
+    unsigned long nowSerial = millis();
+    if (nowSerial - serialTime >= 500)
     {
       SerialReceive();
       SerialSend();
-      serialTime+=500;
+      serialTime = nowSerial;
     }
+
+    unsigned long now = millis();
+    if (now - lastMsg > 5000) { // Interval pengiriman 5000 ms = 5 detik
+        lastMsg = now;
+        
+        // Cek jika bacaan suhu valid sebelum mengirim
+        if (!isnan(input)) {
+          char tempString[8];
+          // Ubah nilai float suhu menjadi string
+          snprintf(tempString, 8, "%.2f", input);
+          Serial.print("Publish message: ");
+          Serial.println(tempString);
+          
+          // Publikasikan pesan ke topik MQTT
+          client.publish(mqtt_topic, tempString);
+        }
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
+void loopCore0(void *param){
+  for (;;)
+  {
+    if (!client.connected()) {
+      reconnect();
+    }
+    
+    client.loop();
+    vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
 
 void applicationTask1(void *param){
   for (;;)
   {
-
     unsigned long now = millis();
   
     if(tuning)
@@ -237,7 +319,7 @@ void applicationTask1(void *param){
         tuning = false;
       }
       if(!tuning)
-      { //we're done, set the tuning parameters
+      {
         kp = aTune.GetKp();
         ki = aTune.GetKi();
         kd = aTune.GetKd();
@@ -262,5 +344,6 @@ void applicationTask1(void *param){
       stepper.moveTo(-output); 
       stepper.run(); 
     }
+    vTaskDelay(pdMS_TO_TICKS(10)); // Jeda singkat
   }
 }

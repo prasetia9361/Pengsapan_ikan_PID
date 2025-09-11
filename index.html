@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grafik Suhu MQTT Real-Time</title>
+    <!-- Memuat library Chart.js dari CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Memuat library MQTT.js dari CDN -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-top: 20px;
+            background-color: #f4f7f6;
+        }
+        h1 {
+            color: #333;
+        }
+        #status {
+            font-size: 1.1em;
+            margin-bottom: 20px;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-weight: bold;
+        }
+        .status-connecting {
+            background-color: #ffc107; /* Kuning */
+            color: #333;
+        }
+        .status-connected {
+            background-color: #28a745; /* Hijau */
+            color: white;
+        }
+        .status-error {
+            background-color: #dc3545; /* Merah */
+            color: white;
+        }
+        .chart-container {
+            width: 90%;
+            max-width: 800px;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <h1>Monitoring Suhu Real-Time via MQTT</h1>
+    <div id="status" class="status-connecting">Menghubungkan ke Broker MQTT...</div>
+
+    <div class="chart-container">
+        <canvas id="suhuChart"></canvas>
+    </div>
+
+    <script>
+        // --- Konfigurasi MQTT ---
+        // Broker EMQX publik menggunakan WebSocket di port 8083
+        const BROKER_URL = 'ws://broker.emqx.io:8083/mqtt';
+        const TOPIC = 'esp32/pid/suhu';
+        const MAX_DATA_POINTS = 20; // Jumlah maksimum titik data di grafik
+
+        const statusDiv = document.getElementById('status');
+        
+        // --- Inisialisasi Grafik (Chart.js) ---
+        const ctx = document.getElementById('suhuChart').getContext('2d');
+        const suhuChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [], // Label untuk sumbu X (waktu)
+                datasets: [{
+                    label: 'Suhu (°C)',
+                    data: [], // Data untuk sumbu Y (suhu)
+                    borderColor: 'rgba(255, 99, 132, 1)',
+                    backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.4 // Membuat garis lebih halus
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Waktu'
+                        }
+                    },
+                    y: {
+                        title: {
+                            display: true,
+                            text: 'Suhu (°C)'
+                        },
+                        // Menyesuaikan skala agar tidak selalu mulai dari 0
+                        beginAtZero: false 
+                    }
+                },
+                animation: {
+                    duration: 200 // Animasi update yang halus
+                }
+            }
+        });
+
+        // Fungsi untuk memperbarui grafik
+        function updateChart(suhu) {
+            const now = new Date();
+            const timeLabel = now.getHours() + ':' + now.getMinutes() + ':' + now.getSeconds();
+
+            // Tambahkan data baru
+            suhuChart.data.labels.push(timeLabel);
+            suhuChart.data.datasets[0].data.push(suhu);
+
+            // Jika data melebihi batas, hapus data tertua
+            if (suhuChart.data.labels.length > MAX_DATA_POINTS) {
+                suhuChart.data.labels.shift();
+                suhuChart.data.datasets[0].data.shift();
+            }
+
+            // Perbarui tampilan grafik
+            suhuChart.update();
+        }
+
+
+        // --- Logika Klien MQTT (MQTT.js) ---
+        console.log('Mencoba terhubung ke broker MQTT di ' + BROKER_URL);
+        const client = mqtt.connect(BROKER_URL);
+
+        // Event handler saat berhasil terhubung
+        client.on('connect', () => {
+            console.log('Berhasil terhubung ke broker MQTT!');
+            statusDiv.textContent = 'Terhubung ke Broker!';
+            statusDiv.className = 'status-connected';
+
+            // Subscribe ke topik suhu
+            client.subscribe(TOPIC, (err) => {
+                if (!err) {
+                    console.log(`Berhasil subscribe ke topik: "${TOPIC}"`);
+                } else {
+                    console.error('Gagal subscribe:', err);
+                    statusDiv.textContent = 'Gagal Subscribe ke Topik!';
+                    statusDiv.className = 'status-error';
+                }
+            });
+        });
+
+        // Event handler saat menerima pesan
+        client.on('message', (topic, message) => {
+            // message adalah Buffer, ubah ke string
+            const suhuStr = message.toString();
+            console.log(`Pesan diterima dari topik "${topic}": ${suhuStr}`);
+            
+            // Konversi string ke angka (float)
+            const suhu = parseFloat(suhuStr);
+            
+            if (!isNaN(suhu)) {
+                updateChart(suhu);
+            } else {
+                console.warn('Data yang diterima bukan angka:', suhuStr);
+            }
+        });
+        
+        // Event handler jika terjadi error
+        client.on('error', (err) => {
+            console.error('Koneksi Error:', err);
+            statusDiv.textContent = 'Error Koneksi!';
+            statusDiv.className = 'status-error';
+            client.end(); // Tutup koneksi
+        });
+
+        // Event handler saat koneksi terputus
+        client.on('close', () => {
+            console.log('Koneksi MQTT ditutup.');
+            statusDiv.textContent = 'Koneksi Terputus!';
+            statusDiv.className = 'status-error';
+        });
+
+    </script>
+</body>
+</html>
