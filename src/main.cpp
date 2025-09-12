@@ -18,6 +18,8 @@ const int thermoCS = 15; // CS
 const int thermoCLK = 14; // SCK
 const int stepPin = 19;
 const int dirPin = 18;
+const int ledPin = 2;
+const int pemantik = 4;
 #define BOOT_BUTTON GPIO_NUM_0
 
 // --- Konfigurasi WiFi ---
@@ -43,7 +45,7 @@ double input, output, setpoint=52.50;
 double kp,ki,kd;
 double kpmodel=1.5, taup=100, theta[50];
 double outputStart=0;
-double aTuneStep=50, aTuneNoise=1, aTuneStartValue=400;
+double aTuneStep=50, aTuneNoise=1, aTuneStartValue=1600;
 unsigned int aTuneLookBack=20;
 boolean tuning = false;
 unsigned long modelTime, serialTime;
@@ -109,16 +111,22 @@ bool reconnect() {
 void AutoTuneHelper(boolean start)
 {
   if(start)
+  {
     ATuneModeRemember = myPID.GetMode();
+    digitalWrite(ledPin, HIGH);
+  }
   else
+  {
     myPID.SetMode(ATuneModeRemember);
+    digitalWrite(ledPin, LOW);
+  }
 }
 
 void changeAutoTune()
 {
  if(!tuning)
   {
-    output=aTuneStartValue;
+    output=-aTuneStartValue;
     aTune.SetNoiseBand(aTuneNoise);
     aTune.SetOutputStep(aTuneStep);
     aTune.SetLookbackSec((int)aTuneLookBack);
@@ -135,17 +143,24 @@ void changeAutoTune()
 
 void SerialSend()
 {
-  Serial.print("setpoint: ");Serial.print(setpoint); Serial.print(" ");
-  Serial.print("suhu: ");Serial.print(input); Serial.print(" ");
-  Serial.print("output: ");Serial.print(-output); Serial.print(" ");
-  Serial.print("current output: ");Serial.print(stepper.currentPosition());Serial.print(" ");
-  if(tuning){
-    Serial.println("tuning mode");
-  } else {
-    Serial.print("kp: ");Serial.print(myPID.GetKp());Serial.print(" ");
-    Serial.print("ki: ");Serial.print(myPID.GetKi());Serial.print(" ");
-    Serial.print("kd: ");Serial.print(myPID.GetKd());Serial.println();
+  // Serial.print("setpoint: ");Serial.print(setpoint); Serial.print(" ");
+  // Serial.print("suhu: ");Serial.print(input); Serial.print(" ");
+  // Serial.print("output: ");Serial.print(-output); Serial.print(" ");
+  // Serial.print("current output: ");Serial.print(stepper.currentPosition());Serial.print(" ");
+  if (stepper.currentPosition() >= -200)
+  {
+    digitalWrite(pemantik, HIGH);
+  }else
+  {
+    digitalWrite(pemantik, LOW);
   }
+  // if(tuning){
+  //   Serial.println("tuning mode");
+  // } else {
+  //   Serial.print("kp: ");Serial.print(myPID.GetKp());Serial.print(" ");
+  //   Serial.print("ki: ");Serial.print(myPID.GetKi());Serial.print(" ");
+  //   Serial.print("kd: ");Serial.print(myPID.GetKd());Serial.println();
+  // }
 }
 
 void SerialReceive()
@@ -155,6 +170,13 @@ void SerialReceive()
    char b = Serial.read(); 
    Serial.flush(); 
    if((b=='1' && !tuning) || (b!='1' && tuning))changeAutoTune();
+  }
+
+  if (tuningButton->getPress() == true) 
+  {
+    changeAutoTune(); 
+    // Reset flag agar fungsi tidak dipanggil berulang kali
+    tuningButton->setPress(false);
   }
 }
 
@@ -188,6 +210,8 @@ void setup()
   }
 
   tuningButton = new button(BOOT_BUTTON);
+  pinMode(ledPin, OUTPUT);
+  pinMode(pemantik, OUTPUT);
   stepper.setMaxSpeed(700);
   stepper.setAcceleration(300);
   stepper.setCurrentPosition(0);
@@ -247,6 +271,7 @@ void setup()
 
 void loop()
 {
+  tuningButton->tick();
   vTaskDelay(pdMS_TO_TICKS(50));
 }
 
