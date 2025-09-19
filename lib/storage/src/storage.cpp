@@ -54,6 +54,49 @@ void storage::init() {
     Serial.println("[DEBUG] Inisialisasi storage selesai");
 }
 
+void storage::readWifi(){
+
+    // Membaca data WiFi dari wifi.json
+ if (SPIFFS.exists("/wifi.json")) {
+     JsonDocument wifiDoc;
+     File wifiFile = SPIFFS.open("/wifi.json", FILE_READ);
+     
+     if (!wifiFile) {
+         Serial.println("Gagal membuka file wifi.json untuk dibaca");
+         setWifi.ssid = "";
+         setWifi.pass = "";
+         return;
+     }
+     
+     char wifiStr[256];
+     wifiFile.readBytes(wifiStr, wifiFile.size());
+     wifiFile.close();
+     
+     DeserializationError wifiError = deserializeJson(wifiDoc, wifiStr);
+     if (wifiError) {
+         Serial.print("deserializeJson() untuk wifi.json returned ");
+         Serial.println(wifiError.c_str());
+         setWifi.ssid = "";
+         setWifi.pass = "";
+         return;
+     }
+     
+     setWifi.ssid = wifiDoc["ssid"].as<String>();
+     setWifi.pass = wifiDoc["pass"].as<String>();
+     
+     Serial.println("Data WiFi berhasil dibaca");
+     Serial.print("SSID: ");
+     Serial.println(setWifi.ssid);
+     Serial.print("Password: ");
+     Serial.println(setWifi.pass);
+ } else {
+     Serial.println("File wifi.json tidak ditemukan");
+     setWifi.ssid = "";
+     setWifi.pass = "";
+ }
+
+}
+
 void storage::saveKp(double Kp){
     JsonDocument doc;
 
@@ -163,6 +206,26 @@ void storage::savePID(double kp, double ki, double kd){
         Serial.println("Mode berhasil disimpan ke SPIFFS");
     }
     file.close();
+}
+
+void storage::writeWifi(const String& ssid, const String& pass){
+    File file = SPIFFS.open("/wifi.json", FILE_WRITE);
+    if (!file) {
+        Serial.println("- gagal membuka file untuk penulisan");
+        return;
+    }
+    
+    JsonDocument doc;
+    doc["ssid"] = ssid;
+    doc["pass"] = pass;
+    
+    serializeJson(doc, file);
+    file.close();
+    
+    setWifi.ssid = ssid;
+    setWifi.pass = pass;
+    
+    Serial.println("Data WiFi berhasil disimpan");
 }
 
 

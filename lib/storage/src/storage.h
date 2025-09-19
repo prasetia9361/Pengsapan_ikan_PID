@@ -10,15 +10,6 @@
 
 class storage {
 private:
-    typedef struct config {
-        uint8_t macAddress[6] = {0,0,0,0,0,0};
-        uint8_t macAddress1[6] = {0,0,0,0,0,0};
-        int32_t modeArray[8] = {0,0,0,0,0,0,0,0};
-        char nameDevice1[12] = "";
-        char nameDevice2[12] = "";
-        int dataInt;
-    } config;
-
     typedef struct PID{
         double Kp;
         double Ki;
@@ -26,7 +17,12 @@ private:
         double calibrration[3] = {3.06 , 0.03 , 0.27};
     }PID;
 
-    config configData;
+    typedef struct wifi
+    {
+        String ssid;
+        String pass;
+    }wifi;
+    wifi setWifi;
 
     PID dataPID;
 
@@ -40,11 +36,15 @@ public:
     double getKi(){return dataPID.calibrration[1];}
     double getKd(){return dataPID.calibrration[2];}
     double *getPID(){return dataPID.calibrration;}
+    void readWifi();
+    String getSsid() { return setWifi.ssid; }
+    String getPass() {return setWifi.pass;}
     
     void init();
     void saveKp(double Kp);
     void saveKi(double Ki);
     void saveKd(double Kd);
     void savePID(double kp, double ki, double kd);
+    void writeWifi(const String& ssid, const String& pass);
 };
 #endif
